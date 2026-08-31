@@ -6,14 +6,20 @@ module Inngest.Signing
   , hashSigningKey
   , hashEventKey
   , canonicalize
+  , signResponse
+  , signCanonical
+  , verifyRaw
+  , verifyRequest
   ) where
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC
 import Crypto.Hash (hashWith, SHA256(..))
+import Crypto.MAC.HMAC (hmac, hmacGetDigest, HMAC)
+import Data.ByteArray (constEq)
 import Data.ByteArray.Encoding (convertToBase, convertFromBase, Base(Base16))
 
-import Data.Aeson (Value(..))
+import Data.Aeson (Value(..), decodeStrict)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key as K
 import qualified Data.ByteString.Builder as B
@@ -96,6 +102,54 @@ jcsString s = B.char7 '"' <> T.foldr (\c acc -> esc c <> acc) mempty s <> B.char
       '\t' -> B.string7 "\\t"
       _ | ord c < 0x20 -> B.string7 (printf "\\u%04x" (ord c))
         | otherwise    -> B.stringUtf8 [c]
+
+-- | hex(HMAC-SHA256(key, msg))
+hmacHex :: ByteString -> ByteString -> ByteString
+hmacHex key msg =
+  convertToBase Base16 (hmacGetDigest (hmac key msg :: HMAC SHA256))
+
+sigHeader :: Int -> ByteString -> ByteString
+sigHeader t s = "t=" <> BC.pack (show t) <> "&s=" <> s
+
+-- | Sign raw response bytes: HMAC over (rawBody <> utf8(show t)).
+signResponse :: ByteString -> Int -> ByteString -> ByteString
+signResponse key t raw =
+  sigHeader t (hmacHex (stripKeyPrefix key) (raw <> BC.pack (show t)))
+
+-- | Sign a value over its JCS-canonical form (models the server side).
+signCanonical :: ByteString -> Int -> Value -> ByteString
+signCanonical key t v =
+  sigHeader t (hmacHex (stripKeyPrefix key) (canonicalize v <> BC.pack (show t)))
+
+parseSig :: ByteString -> Maybe (Int, ByteString)
+parseSig h = do
+  let parts = BC.split '&' h
+  tPart <- lookup "t" (kv parts)
+  sPart <- lookup "s" (kv parts)
+  t <- case BC.readInt tPart of Just (n, "") -> Just n; _ -> Nothing
+  pure (t, sPart)
+  where
+    kv = map (\p -> case BC.break (== '=') p of (k, v) -> (k, BC.drop 1 v))
+
+-- | Verify a response-style signature (over raw bytes).
+verifyRaw :: [ByteString] -> ByteString -> ByteString -> Maybe ByteString
+verifyRaw keys raw hdr = do
+  (t, given) <- parseSig hdr
+  firstMatch given [ (k, hmacHex (stripKeyPrefix k) (raw <> BC.pack (show t))) | k <- keys ]
+
+-- | Verify a request-style signature (over the JCS-canonical body).
+verifyRequest :: [ByteString] -> ByteString -> ByteString -> Maybe ByteString
+verifyRequest keys raw hdr = do
+  (t, given) <- parseSig hdr
+  v <- decodeStrict raw
+  let canon = canonicalize v
+  firstMatch given [ (k, hmacHex (stripKeyPrefix k) (canon <> BC.pack (show t))) | k <- keys ]
+
+firstMatch :: ByteString -> [(ByteString, ByteString)] -> Maybe ByteString
+firstMatch _ [] = Nothing
+firstMatch given ((k, expected):rest)
+  | constEq given expected = Just k
+  | otherwise              = firstMatch given rest
 
 -- | ECMAScript number formatting. Integers print without a decimal point;
 -- non-integers use the shortest round-tripping decimal. Covers the cases that

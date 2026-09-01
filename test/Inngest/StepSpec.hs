@@ -6,8 +6,10 @@ import Data.Aeson (Value(..), object, (.=), toJSON)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import UnliftIO.Exception (throwIO)
 import Inngest.Types
 import Inngest.Step
+import Inngest.Errors (NonRetriableError(..))
 
 -- A ServerRequest with the given memoized steps (keyed by hashed id).
 reqWith :: [(Text, Value)] -> ServerRequest
@@ -84,6 +86,15 @@ spec = do
       case siName (ooStep o) of
         Just t  -> t `shouldSatisfy` (\s -> not (null (show s)))
         Nothing -> expectationFailure "expected a sleep-until name"
+
+  describe "step errors" $ do
+    it "maps a NonRetriableError step to a terminal StepFailed" $ do
+      r <- runH (reqWith []) (stepRun "boom" (throwIO (NonRetriableError "no") :: IO ()))
+      siOp (ooStep (firstOp r)) `shouldBe` OpStepFailed
+
+    it "maps a plain exception step to a retriable StepError" $ do
+      r <- runH (reqWith []) (stepRun "boom" (throwIO (userError "x") :: IO ()))
+      siOp (ooStep (firstOp r)) `shouldBe` OpStepError
 
   describe "invoke" $ do
     it "interrupts with an InvokeFunction opcode addressing app-fn" $ do

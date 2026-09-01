@@ -58,9 +58,10 @@ import Data.ByteArray.Encoding (convertToBase, Base(Base16))
 import Data.Text.Encoding (decodeUtf8)
 import Data.Time (UTCTime, getCurrentTime, addUTCTime)
 import UnliftIO (MonadUnliftIO)
-import UnliftIO.Exception (try, throwIO, Exception, SomeException, displayException)
+import UnliftIO.Exception (try, throwIO, Exception, SomeException, displayException, fromException)
 
 import Inngest.Types
+import Inngest.Errors (NonRetriableError(..), RetryAfterError(..))
 
 --------------------------------------------------------------------------------
 -- Monad
@@ -258,11 +259,21 @@ stepErrorOp :: ExecState -> HashedStepId -> Text -> Maybe Int -> SomeException -
 stepErrorOp st hashed sid idx err =
   OutgoingOp (userland (stepInfo hashed op sid) sid idx) Nothing (Just ed)
   where
-    terminal = case ctxMaxAttempts (esCtx st) of
+    exhausted = case ctxMaxAttempts (esCtx st) of
       Just ma -> ctxAttempt (esCtx st) + 1 >= ma
       Nothing -> False
+    (forceTerminal, code, nm) = classifyStepError err
+    terminal = forceTerminal || exhausted
     op = if terminal then OpStepFailed else OpStepError
-    ed = ErrorData "unknown" (T.pack (displayException err)) "Error" Nothing
+    ed = ErrorData code (T.pack (displayException err)) nm Nothing
+
+-- | Classify a caught step exception: whether it is terminal (non-retriable),
+-- plus its wire code and name.
+classifyStepError :: SomeException -> (Bool, Text, Text)
+classifyStepError e
+  | Just (NonRetriableError _) <- fromException e = (True,  "non_retriable_error", "NonRetriableError")
+  | Just (RetryAfterError _ _) <- fromException e = (False, "retry_after_error",  "RetryAfterError")
+  | otherwise                                     = (False, "unknown",            "Error")
 
 -- | Sleep for a duration (measured from now).
 sleep :: MonadInngest m => Text -> Duration -> InngestT m ()

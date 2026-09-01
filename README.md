@@ -49,9 +49,16 @@ or headless (starts the dev server, runs the example, tears down):
 nix develop .#dev --command bash scripts/e2e.sh
 ```
 
-Expected: `E2E PASS: pipeline returned 31`. This exercises sync, event send, the
-206 replay loop, parallel planning/targeting, and sleep against the real server.
-(The Inngest dev server is SSPL-licensed, so the flake sets `allowUnfree`.)
+Expected: `E2E PASS: stepRun + sleep + parallel + waitForEvent + invoke + onFailure`.
+This exercises sync, event send, the 206 replay loop, parallel
+planning/targeting, sleep, waitForEvent, invoke, and onFailure against the real
+server. (The Inngest dev server is SSPL-licensed, so the flake sets `allowUnfree`.)
+
+## CI
+
+`.github/workflows/ci.yml` installs Nix and runs both the unit suite
+(`cabal test`) and the end-to-end example against a real Inngest dev server
+(`scripts/e2e.sh`) on every push/PR.
 
 ## Quick sketch
 

@@ -24,7 +24,14 @@ if [ "$ok" -ne 1 ]; then
 fi
 echo "inngest dev healthy."
 
-cabal run -v0 hs-inngest-example
+# Prefer a Nix-built binary (CI); fall back to cabal for local dev.
+if [ -x ./result/bin/hs-inngest-example ]; then
+  echo "Running prebuilt example (result/bin/hs-inngest-example) ..."
+  ./result/bin/hs-inngest-example
+else
+  echo "Running example via cabal ..."
+  cabal run -v0 hs-inngest-example
+fi
 rc=$?
 echo "example exit code: $rc"
 exit $rc

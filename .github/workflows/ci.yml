@@ -22,8 +22,13 @@ jobs:
             extra-substituters = https://nix-community.cachix.org
             extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
 
-      - name: Unit tests
-        run: nix develop .#dev --command cabal test
+      # Builds the library + example and runs the hspec suite in the Nix
+      # checkPhase (build tools like hspec-discover are provided by Nix, so no
+      # Hackage index / cabal solver is involved). Produces result/bin/.
+      - name: Build + unit tests
+        run: nix build .#hs-inngest -L
 
+      # e2e.sh starts the Inngest dev server (from the dev shell) and runs the
+      # example binary built above against it.
       - name: End-to-end (real Inngest dev server)
         run: nix develop .#dev --command bash scripts/e2e.sh

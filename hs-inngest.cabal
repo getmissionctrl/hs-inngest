@@ -24,6 +24,7 @@ library
                     Inngest.Const
                     Inngest.Inspection
                     Inngest.Sync
+                    Inngest.Serve.Servant
   build-depends:    base >=4.14 && <5
                   , aeson >=2.0
                   , bytestring
@@ -38,6 +39,12 @@ library
                   , transformers
                   , mtl
                   , unliftio
+                  , wai
+                  , http-types
+                  , servant
+                  , servant-server
+                  , tagged
+                  , case-insensitive
 
 test-suite hs-inngest-test
   import:           warnings
@@ -54,5 +61,6 @@ test-suite hs-inngest-test
                     Inngest.FunctionSpec
                     Inngest.ExecutionSpec
                     Inngest.SyncSpec
+                    Inngest.ServeSpec
   build-depends:    base, hs-inngest, hspec, aeson, bytestring, text, http-client
                   , time, containers, vector, unliftio

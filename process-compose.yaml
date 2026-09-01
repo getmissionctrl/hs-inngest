@@ -1,0 +1,30 @@
+# Local dev services for hs-inngest.
+#
+# Runs the Inngest dev server and the end-to-end example that connects to it.
+# Both `inngest` and `cabal` come from the dev shell, so run this as:
+#
+#   nix develop .#dev --command process-compose up
+#
+# The `example` process serves the app, registers it out-of-band, sends an
+# event, and drives a step + sleep + parallel pipeline to completion.
+version: "0.5"
+
+processes:
+  inngest:
+    command: "inngest dev"
+    readiness_probe:
+      exec:
+        command: "curl -sf http://127.0.0.1:8288/health"
+      initial_delay_seconds: 1
+      period_seconds: 2
+      failure_threshold: 30
+    availability:
+      restart: "always"
+
+  example:
+    command: "cabal run -v0 hs-inngest-example"
+    depends_on:
+      inngest:
+        condition: process_healthy
+    availability:
+      restart: "no"

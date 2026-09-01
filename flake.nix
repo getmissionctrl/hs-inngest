@@ -10,14 +10,15 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        # allowUnfree: the Inngest dev-server binary is SSPL-licensed.
+        pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };
         hs-inngest = pkgs.haskellPackages.callCabal2nix "hs-inngest" ./. {};
-        # Dev/test shell: GHC with every lib+test dependency of the package
-        # (via `.env`) plus cabal-install, so `cabal build` / `cabal test`
-        # build and run the hspec suite offline with incremental compilation.
+        # Dev/test shell: GHC with every lib+test+example dependency of the
+        # package (via `.env`) plus cabal-install, and the Inngest dev server +
+        # process-compose so `cabal test` and the end-to-end example both run.
         devShell = hs-inngest.env.overrideAttrs (old: {
           nativeBuildInputs = (old.nativeBuildInputs or [])
-            ++ [ pkgs.cabal-install ];
+            ++ [ pkgs.cabal-install pkgs.inngest pkgs.process-compose pkgs.curl ];
         });
       in {
         packages = {

@@ -31,6 +31,28 @@ nix develop .#dev --command cabal build
 nix develop .#dev --command cabal test
 ```
 
+## End-to-end example (against a real dev server)
+
+`example/Main.hs` serves an app, registers it with a locally-running
+[Inngest dev server](https://www.inngest.com/docs/local-development), sends an
+event, and drives a `step → sleep → parallel → step` pipeline to completion.
+
+Run the dev server and the example together with process-compose:
+
+```sh
+nix develop .#dev --command process-compose up
+```
+
+or headless (starts the dev server, runs the example, tears down):
+
+```sh
+nix develop .#dev --command bash scripts/e2e.sh
+```
+
+Expected: `E2E PASS: pipeline returned 31`. This exercises sync, event send, the
+206 replay loop, parallel planning/targeting, and sleep against the real server.
+(The Inngest dev server is SSPL-licensed, so the flake sets `allowUnfree`.)
+
 ## Quick sketch
 
 ```haskell

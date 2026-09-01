@@ -56,9 +56,18 @@ server. (The Inngest dev server is SSPL-licensed, so the flake sets `allowUnfree
 
 ## CI
 
-`.github/workflows/ci.yml` installs Nix and runs both the unit suite
-(`cabal test`) and the end-to-end example against a real Inngest dev server
-(`scripts/e2e.sh`) on every push/PR.
+`.github/workflows/ci.yml` installs Nix and runs three separate steps on every
+push/PR — **Build** (`cabal build all`), **Unit tests**
+(`cabal test --test-show-details=direct`, so the hspec tree is visible), and
+**End-to-end** against a real Inngest dev server (`scripts/e2e.sh`).
+
+## Logging
+
+The SDK bakes in no logger; a function's base monad `m` (any `MonadUnliftIO`)
+carries whatever logging the user wants. The example and test suite run in
+`KatipContextT IO`, emitting structured JSON logs from step bodies — and because
+memoized steps don't re-run, those logs are naturally de-duplicated across the
+replay loop (log inside steps, not around them).
 
 ## Quick sketch
 

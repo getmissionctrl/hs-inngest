@@ -3,6 +3,7 @@ module Inngest.StepSpec (spec) where
 
 import Test.Hspec hiding (parallel)
 import Data.Aeson (Value(..), object, (.=), toJSON)
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Inngest.Types
@@ -83,6 +84,21 @@ spec = do
       case siName (ooStep o) of
         Just t  -> t `shouldSatisfy` (\s -> not (null (show s)))
         Nothing -> expectationFailure "expected a sleep-until name"
+
+  describe "invoke" $ do
+    it "interrupts with an InvokeFunction opcode addressing app-fn" $ do
+      r <- runH (reqWith []) (invoke "inv" (FunctionRef "app" "other")
+                                (object ["x" .= (1 :: Int)]) :: InngestT IO Value)
+      let o = firstOp r
+      siOp (ooStep o) `shouldBe` OpInvokeFunction
+      case siOpts (ooStep o) of
+        Just (Object oo) -> KM.lookup "function_id" oo `shouldBe` Just (String "app-other")
+        _                -> expectationFailure "expected invoke opts with function_id"
+
+    it "returns the memoized invoke output" $ do
+      r <- runH (reqWith [(hashStepId "inv", object ["data" .= (7 :: Int)])])
+                (invoke "inv" (FunctionRef "app" "other") (object []) :: InngestT IO Int)
+      r `shouldBe` Right 7
 
   describe "parallel" $ do
     let par = parallel [stepRun "a" (pure (1 :: Int)), stepRun "b" (pure (2 :: Int))]

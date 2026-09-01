@@ -26,6 +26,8 @@ module Inngest.Step
   , sleepUntil
   , waitForEvent
   , WaitOpts(..)
+  , invoke
+  , FunctionRef(..)
   , parallel
     -- * Errors
   , StepFailure(..)
@@ -316,6 +318,41 @@ waitForEvent sid opts = do
                           sid idx)
                        Nothing Nothing ]
 
+
+--------------------------------------------------------------------------------
+-- invoke
+--------------------------------------------------------------------------------
+
+-- | A reference to another Inngest function, by app id and (local) function id.
+data FunctionRef = FunctionRef
+  { frAppId :: Text
+  , frFnId  :: Text
+  } deriving (Eq, Show)
+
+-- | Invoke another function and wait for its result. On replay the recorded
+-- output is decoded and returned.
+invoke :: (ToJSON i, FromJSON o, MonadInngest m) => Text -> FunctionRef -> i -> InngestT m o
+invoke sid ref input = do
+  st <- InngestT ask
+  (hashed, idx) <- liftIO (nextHashedId st sid)
+  memo <- liftIO (popMemo st hashed)
+  case memo of
+    Just (MemoData d)   -> case fromJSON d of
+      Success o -> pure o
+      Error e   -> liftIO (throwIO (StepFailure
+                     (ErrorData "unknown" (T.pack ("failed to decode invoke output: " <> e)) "DecodeError" Nothing)))
+    Just (MemoError ed) -> liftIO (throwIO (StepFailure ed))
+    Nothing -> case esTarget st of
+      Just t | hashed /= t -> skip
+      _ -> interrupt
+        [ OutgoingOp (userland (stepInfo hashed OpInvokeFunction sid)
+                        { siName = Just sid
+                        , siOpts = Just (object
+                            [ "function_id" .= (frAppId ref <> "-" <> frFnId ref)
+                            , "payload" .= object [ "data" .= toJSON input
+                                                  , "v" .= (Nothing :: Maybe Text) ] ]) }
+                        sid idx)
+                     Nothing Nothing ]
 
 --------------------------------------------------------------------------------
 -- parallel / planning

@@ -62,5 +62,6 @@ test-suite hs-inngest-test
                     Inngest.ExecutionSpec
                     Inngest.SyncSpec
                     Inngest.ServeSpec
+                    Inngest.IntegrationSpec
   build-depends:    base, hs-inngest, hspec, aeson, bytestring, text, http-client
                   , time, containers, vector, unliftio

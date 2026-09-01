@@ -1,26 +1,23 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | End-to-end example exercising every step tool against a locally-running
--- Inngest dev server:
+-- | End-to-end example with structured logging (katip).
 --
---   * funcA — stepRun, sleep, parallel, waitForEvent, invoke
---   * funcB — the invoke target
---   * funcC — a terminal failure that triggers its onFailure handler
+-- Functions run in @KatipContextT IO@ — a 'MonadUnliftIO', hence a valid
+-- 'MonadInngest' base monad — so step bodies emit structured logs. Because
+-- memoized steps don't re-run, those logs are naturally de-duplicated across
+-- the replay loop. Exercises every step tool against a real Inngest dev server:
+-- stepRun, sleep, parallel, waitForEvent, invoke, and onFailure.
 --
--- Serve the app, register it, then send events and assert both funcA's result
--- and that funcC's onFailure ran.
---
--- Run the dev server (see process-compose.yaml) then:
 --   nix develop .#dev --command cabal run hs-inngest-example
 module Main (main) where
 
 import Control.Concurrent (forkIO, threadDelay, newEmptyMVar, putMVar, takeMVar, MVar)
-import Control.Exception (throwIO)
 import Control.Monad (void, when)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (object, (.=))
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import qualified Data.Text as T
+import Katip
 import Network.HTTP.Client (httpLbs, responseStatus, responseBody)
 import Network.HTTP.Client.TLS (getGlobalManager)
 import Network.HTTP.Types.Status (statusCode)
@@ -28,8 +25,12 @@ import qualified Network.Wai.Handler.Warp as Warp
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hSetBuffering, stdout, BufferMode(LineBuffering))
 import System.Timeout (timeout)
+import UnliftIO.Exception (bracket, throwIO)
 
 import Inngest
+
+-- | The app's base monad: IO plus katip structured-logging context.
+type AppM = KatipContextT IO
 
 appPort :: Int
 appPort = 8899
@@ -40,42 +41,53 @@ appUrl = "http://127.0.0.1:8899/api/inngest"
 cfg :: Config
 cfg = (devConfig "hs-inngest-example") { cfgEventKey = Just "dev" }
 
--- | The invoke target: returns a fixed value.
-funcB :: Function IO
-funcB = createFunction (defaultFnOpts "funcB") [TriggerEvent "demo/never" Nothing] $ \_ _ ->
-  pure (42 :: Int)
+-- | Log a structured event tagged with the step name (inside a step body).
+logStep :: KatipContext m => Text -> LogStr -> m ()
+logStep name msg = katipAddContext (sl "step" name) $ logFM InfoS msg
 
--- | The main pipeline: sequential steps, a real sleep, a parallel fan-out, a
--- wait for an approval event, and an invoke of funcB.
-funcA :: MVar Int -> Function IO
+-- | The invoke target.
+funcB :: Function AppM
+funcB = createFunction (defaultFnOpts "funcB") [TriggerEvent "demo/never" Nothing] $ \_ _ ->
+  stepRun "b-work" $ do
+    logStep "funcB" "invoked"
+    pure (42 :: Int)
+
+-- | The main pipeline.
+funcA :: MVar Int -> Function AppM
 funcA doneA =
   createFunction (defaultFnOpts "funcA") [TriggerEvent "demo/hello" Nothing] $ \_ _ -> do
-    a        <- stepRun "one" (pure (1 :: Int))
+    a        <- stepRun "one" (logStep "one" "computing base" >> pure (1 :: Int))
     sleep "nap" (seconds 1)
-    bs       <- parallel [ stepRun "p1" (pure (10 :: Int))
-                         , stepRun "p2" (pure (20 :: Int)) ]
+    bs       <- parallel [ stepRun "p1" (logStep "p1" "fan-out branch" >> pure (10 :: Int))
+                         , stepRun "p2" (logStep "p2" "fan-out branch" >> pure (20 :: Int)) ]
     approved <- waitForEvent "await-approve" (WaitOpts "demo/approve" (seconds 60) Nothing)
     inv      <- invoke "call-b" (FunctionRef (cfgAppId cfg) "funcB")
-                       (object ["n" .= (21 :: Int)]) :: InngestT IO Int
+                       (object ["n" .= (21 :: Int)]) :: InngestT AppM Int
     let total = a + sum bs + inv + (if isJust approved then 1000 else 0)
     stepRun "finish" $ do
-      putMVar doneA total
+      katipAddContext (sl "total" total <> sl "approved" (isJust approved) <> sl "invoke" inv) $
+        logFM InfoS "pipeline complete"
+      liftIO (putMVar doneA total)
       pure total
 
 -- | A function that fails terminally, triggering its onFailure handler.
-funcC :: MVar Bool -> Function IO
+funcC :: MVar Bool -> Function AppM
 funcC doneFail =
   withOnFailure onFail $
-    createFunction (defaultFnOpts "funcC") [TriggerEvent "demo/fail" Nothing] $ \_ _ -> do
-      _ <- stepRun "explode" (throwIO (NonRetriableError "intentional failure") :: IO ())
-      pure ()
+    createFunction (defaultFnOpts "funcC") [TriggerEvent "demo/fail" Nothing] $ \_ _ ->
+      stepRun "explode" (logStep "funcC" "about to fail"
+                          >> throwIO (NonRetriableError "intentional failure")) :: InngestT AppM ()
   where
     onFail _ _ = stepRun "note-failure" $ do
-      putMVar doneFail True
+      logStep "funcC" "onFailure ran"
+      liftIO (putMVar doneFail True)
       pure True
 
-post :: Text -> Text -> IO ()
-post label body = putStrLn ("  " <> T.unpack label <> ": " <> T.unpack body)
+makeLogEnv :: IO LogEnv
+makeLogEnv = do
+  scribe <- mkHandleScribeWithFormatter jsonFormat ColorIfTerminal stdout (permitItem InfoS) V2
+  le     <- initLogEnv "hs-inngest-example" "development"
+  registerScribe "stdout" scribe defaultScribeSettings le
 
 main :: IO ()
 main = do
@@ -84,40 +96,38 @@ main = do
   doneFail <- newEmptyMVar
   let fns = [ funcA doneA, funcB, funcC doneFail ]
 
-  putStrLn ("Serving app on " <> T.unpack appUrl)
-  void $ forkIO $ Warp.run appPort (toApplication id cfg appUrl fns)
-  threadDelay 500000
+  bracket makeLogEnv closeScribes $ \le -> do
+    -- Serve, running each request in the katip context.
+    void $ forkIO $ Warp.run appPort (toApplication (runKatipContextT le () "inngest") cfg appUrl fns)
+    threadDelay 500000
+    mgr <- getGlobalManager
 
-  mgr <- getGlobalManager
+    runKatipContextT le () "driver" $ do
+      logFM InfoS (ls ("serving app on " <> appUrl))
 
-  putStrLn "Registering with the Inngest dev server..."
-  regReq  <- buildRegisterRequest cfg appUrl (concatMap (functionConfigs (cfgAppId cfg) appUrl) fns) Nothing
-  regResp <- httpLbs regReq mgr
-  putStrLn ("  register -> HTTP " <> show (statusCode (responseStatus regResp)))
-  when (statusCode (responseStatus regResp) >= 400) $ do
-    putStrLn ("  register failed: " <> show (responseBody regResp)); exitFailure
+      regReq  <- liftIO $ buildRegisterRequest cfg appUrl (concatMap (functionConfigs (cfgAppId cfg) appUrl) fns) Nothing
+      regResp <- liftIO $ httpLbs regReq mgr
+      katipAddContext (sl "status" (statusCode (responseStatus regResp))) $
+        logFM InfoS "registered app with dev server"
+      when (statusCode (responseStatus regResp) >= 400) $ liftIO $ do
+        putStrLn ("register failed: " <> show (responseBody regResp)); exitFailure
 
-  -- Kick off funcA and funcC.
-  putStrLn "Sending events demo/hello and demo/fail..."
-  _ <- send cfg [mkEvent "demo/hello" (object ["who" .= ("world" :: Text)])]
-  _ <- send cfg [mkEvent "demo/fail"  (object [])]
-  post "sent" "demo/hello, demo/fail"
+      _ <- liftIO $ send cfg [mkEvent "demo/hello" (object ["who" .= ("world" :: Text)])]
+      _ <- liftIO $ send cfg [mkEvent "demo/fail"  (object [])]
+      logFM InfoS "sent demo/hello and demo/fail"
 
-  -- Deliver the approval funcA is waiting for (after it has reached the wait).
-  void $ forkIO $ do
-    threadDelay (6 * 1000000)
-    _ <- send cfg [mkEvent "demo/approve" (object ["ok" .= True])]
-    post "sent" "demo/approve (delayed)"
+      void $ liftIO $ forkIO $ do
+        threadDelay (6 * 1000000)
+        void $ send cfg [mkEvent "demo/approve" (object ["ok" .= True])]
 
-  putStrLn "Waiting for funcA result and funcC onFailure..."
-  rA <- timeout (90 * 1000000) (takeMVar doneA)
-  rF <- timeout (90 * 1000000) (takeMVar doneFail)
+      logFM InfoS "waiting for funcA result and funcC onFailure"
+      rA <- liftIO $ timeout (90 * 1000000) (takeMVar doneA)
+      rF <- liftIO $ timeout (90 * 1000000) (takeMVar doneFail)
+      katipAddContext (sl "funcA" (show rA) <> sl "onFailure" (show rF)) $
+        logFM InfoS "results collected"
 
-  let okA = rA == Just 1073   -- 1 + (10+20) + 42(invoke) + 1000(approved)
-      okF = rF == Just True
-  putStrLn ("  funcA result: " <> show rA <> (if okA then "  ✓" else "  ✗ (want Just 1073)"))
-  putStrLn ("  funcC onFailure ran: " <> show rF <> (if okF then "  ✓" else "  ✗"))
-
-  if okA && okF
-    then putStrLn "E2E PASS: stepRun + sleep + parallel + waitForEvent + invoke + onFailure" >> exitSuccess
-    else putStrLn "E2E FAIL" >> exitFailure
+      let okA = rA == Just 1073   -- 1 + (10+20) + 42 + 1000
+          okF = rF == Just True
+      liftIO $ if okA && okF
+        then putStrLn "E2E PASS: stepRun + sleep + parallel + waitForEvent + invoke + onFailure" >> exitSuccess
+        else putStrLn ("E2E FAIL: funcA=" <> show rA <> " onFailure=" <> show rF) >> exitFailure

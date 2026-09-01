@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Inngest.StepSpec (spec) where
 
-import Test.Hspec
+import Test.Hspec hiding (parallel)
 import Data.Aeson (Value(..), object, (.=), toJSON)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -83,3 +83,35 @@ spec = do
       case siName (ooStep o) of
         Just t  -> t `shouldSatisfy` (\s -> not (null (show s)))
         Nothing -> expectationFailure "expected a sleep-until name"
+
+  describe "parallel" $ do
+    let par = parallel [stepRun "a" (pure (1 :: Int)), stepRun "b" (pure (2 :: Int))]
+    it "plans every branch's first step into one interrupt (StepPlanned)" $ do
+      r <- runH (reqWith []) par
+      case r of
+        Left (Interrupt ops) -> do
+          length ops `shouldBe` 2
+          map (siOp . ooStep) ops `shouldBe` [OpStepPlanned, OpStepPlanned]
+          map (siId . ooStep) ops `shouldBe` [hashStepId "a", hashStepId "b"]
+        _ -> expectationFailure "expected a planning interrupt"
+
+    it "plans only the not-yet-run branches" $ do
+      r <- runH (reqWith [(hashStepId "a", object ["data" .= (1 :: Int)])]) par
+      case r of
+        Left (Interrupt ops) -> map (siId . ooStep) ops `shouldBe` [hashStepId "b"]
+        _ -> expectationFailure "expected a planning interrupt"
+
+    it "returns branch results in order once all are memoized" $ do
+      r <- runH (reqWith [ (hashStepId "a", object ["data" .= (1 :: Int)])
+                         , (hashStepId "b", object ["data" .= (2 :: Int)]) ]) par
+      r `shouldBe` Right [1, 2]
+
+    it "executes only the targeted branch under stepId targeting" $ do
+      st <- newExecState (reqWith []) (Just (hashStepId "b"))
+      r  <- runInngestT st par
+      case r of
+        Left (Interrupt (o:_)) -> do
+          siId (ooStep o) `shouldBe` hashStepId "b"
+          siOp (ooStep o) `shouldBe` OpStepRun   -- targeted step runs for real
+          ooData o        `shouldBe` Just (toJSON (2 :: Int))
+        _ -> expectationFailure "expected the targeted step to run"

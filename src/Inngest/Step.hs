@@ -26,6 +26,7 @@ module Inngest.Step
   , sleepUntil
   , waitForEvent
   , WaitOpts(..)
+  , parallel
     -- * Errors
   , StepFailure(..)
     -- * Internals (exposed for testing)
@@ -37,7 +38,7 @@ module Inngest.Step
 
 import Control.Monad.Reader (ReaderT(..), runReaderT, ask)
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE, catchE)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.IORef
 import Data.Map.Strict (Map)
@@ -315,3 +316,29 @@ waitForEvent sid opts = do
                           sid idx)
                        Nothing Nothing ]
 
+
+--------------------------------------------------------------------------------
+-- parallel / planning
+--------------------------------------------------------------------------------
+
+-- | Run branches as a server-driven parallel group. Each branch's first new
+-- step is emitted as a planned opcode; all planned opcodes are collected into a
+-- single interrupt (one 206 array). Already-memoized branches contribute their
+-- value; once every branch is memoized, returns the branch results in order.
+--
+-- This is planning, not local concurrency: the server re-invokes the function
+-- once per planned step (with stepId targeting) and runs them in parallel
+-- server-side.
+parallel :: Monad m => [InngestT m a] -> InngestT m [a]
+parallel branches = InngestT $ ReaderT $ \s0 -> do
+  let s = s0 { esParallel = True }
+      runBranch b =
+        (Right <$> runReaderT (unInngestT b) s)
+          `catchE` \i -> case i of
+            Interrupt ops -> pure (Left ops)
+            SkipStep      -> pure (Left [])
+  outcomes <- mapM runBranch branches
+  let plannedOps = concat [ ops | Left ops <- outcomes ]
+  if not (null plannedOps)
+    then throwE (Interrupt plannedOps)
+    else pure [ a | Right a <- outcomes ]

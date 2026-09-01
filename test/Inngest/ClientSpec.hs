@@ -2,7 +2,7 @@
 module Inngest.ClientSpec (spec) where
 
 import Test.Hspec
-import Data.Aeson (object, (.=), encode, eitherDecode)
+import Data.Aeson (object, (.=), eitherDecode)
 import Network.HTTP.Client (method, path, requestBody, RequestBody(..))
 import Inngest.Config
 import Inngest.Types

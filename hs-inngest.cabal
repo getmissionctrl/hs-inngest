@@ -41,3 +41,4 @@ test-suite hs-inngest-test
                     Inngest.SigningSpec
                     Inngest.ClientSpec
   build-depends:    base, hs-inngest, hspec, aeson, bytestring, text, http-client
+                  , time, containers

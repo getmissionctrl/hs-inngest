@@ -16,7 +16,7 @@ runs:
     # which are identical across jobs, so the build job's output is reusable by
     # the test/e2e jobs. Keyed on the toolchain + all sources.
     - name: Cache build
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: dist-newstyle
         key: dist-${{ runner.os }}-${{ hashFiles('flake.lock', 'flake.nix', '**/*.cabal', 'cabal.project', 'src/**/*.hs', 'test/**/*.hs', 'example/**/*.hs') }}
